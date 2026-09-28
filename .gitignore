@@ -1,0 +1,21 @@
+# Build / Visual Studio
+bin/
+obj/
+.vs/
+*.user
+*.suo
+*.rsuser
+[Dd]ebug/
+[Rr]elease/
+[Ll]ogs/
+TestResults/
+*.log
+
+# Rider / VS Code
+.idea/
+.vscode/
+
+# Configuración local con credenciales (usar appsettings.example.json como plantilla)
+appsettings.json
+appsettings.*.json
+!appsettings.example.json
