@@ -19,3 +19,6 @@ TestResults/
 appsettings.json
 appsettings.*.json
 !appsettings.example.json
+
+# Ejecutable publicado
+publish/

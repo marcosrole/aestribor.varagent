@@ -13,6 +13,9 @@ public sealed class SignalRService : IAsyncDisposable
     private const string SaveReplayMethod = "SaveReplay";
     private const string ReplayResultMethod = "ReplayResult";
     private const string RegisterStationMethod = "RegisterStation";
+    private const string StartCaptureMethod = "StartCapture";
+    private const string StopCaptureMethod = "StopCapture";
+    private const string CaptureResultMethod = "CaptureResult";
     private const string ApiKeyHeader = "X-Api-Key";
 
     private static readonly TimeSpan InitialRetryDelay = TimeSpan.FromSeconds(5);
@@ -43,6 +46,8 @@ public sealed class SignalRService : IAsyncDisposable
             .Build();
 
         _connection.On<SaveReplayCommand>(SaveReplayMethod, OnSaveReplayAsync);
+        _connection.On<CaptureCommand>(StartCaptureMethod, command => OnCaptureAsync(command, CaptureAction.Start));
+        _connection.On<CaptureCommand>(StopCaptureMethod, command => OnCaptureAsync(command, CaptureAction.Stop));
 
         _connection.Reconnecting += OnReconnecting;
         _connection.Reconnected += OnReconnected;
@@ -107,7 +112,16 @@ public sealed class SignalRService : IAsyncDisposable
                 await _connection.StartAsync(ct);
                 ConsoleLog.Success($"SignalR: conectado (ConnectionId {_connection.ConnectionId}).");
                 await RegisterStationAsync(ct);
-                return;
+
+                if (_connection.State == HubConnectionState.Connected)
+                {
+                    return;
+                }
+
+                // El servidor cortó la conexión apenas se abrió (lo hace si la ApiKey no coincide).
+                // Closed no reinicia este bucle porque sigue corriendo: se reintenta desde acá.
+                ConsoleLog.Error("SignalR: el servidor cerró la conexión al conectar. Revisá que Aestribor:ApiKey coincida con la del servidor.");
+                ConsoleLog.Warn($"SignalR: reintentando en {InitialRetryDelay.TotalSeconds:0} s...");
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -199,6 +213,74 @@ public sealed class SignalRService : IAsyncDisposable
 
         result.ProcessedAtUtc = DateTime.UtcNow;
         await SendResultAsync(result);
+    }
+
+    private async Task OnCaptureAsync(CaptureCommand? command, string action)
+    {
+        if (command is null)
+        {
+            ConsoleLog.Error($"SignalR: se recibió un comando de captura ({action}) sin datos; se ignora.");
+            return;
+        }
+
+        bool start = action == CaptureAction.Start;
+        string heats = command.RaceIds.Count > 0 ? string.Join(",", command.RaceIds) : "-";
+        ConsoleLog.Info($"SignalR: comando {(start ? StartCaptureMethod : StopCaptureMethod)} recibido. " +
+                        $"RequestId={command.RequestId} Heats={heats}");
+
+        var result = new CaptureResult
+        {
+            RequestId = command.RequestId,
+            StationId = _settings.StationId,
+            Action = action
+        };
+
+        try
+        {
+            Func<CaptureOperationResult> operation = start ? _obs.StartCapture : _obs.StopCapture;
+            var obsResult = await Task.Run(operation);
+            result.RecordingPath = obsResult.RecordingPath;
+
+            switch (obsResult.Outcome)
+            {
+                case CaptureOutcome.Changed:
+                    result.Success = true;
+                    result.Status = start ? CaptureStatus.Started : CaptureStatus.Stopped;
+                    ConsoleLog.Success(start ? "Captura iniciada (grabación + Replay Buffer)." : "Captura detenida (grabación + Replay Buffer).");
+                    break;
+                case CaptureOutcome.NoChange:
+                    result.Success = true;
+                    result.Status = CaptureStatus.NoChange;
+                    ConsoleLog.Info(start ? "La grabación y el buffer ya estaban activos." : "La grabación y el buffer ya estaban detenidos.");
+                    break;
+                case CaptureOutcome.NotConnected:
+                    result.Status = CaptureStatus.ObsDisconnected;
+                    result.ErrorMessage = "El agente no está conectado a OBS.";
+                    ConsoleLog.Warn($"RequestId={command.RequestId}: OBS desconectado, no se pudo {(start ? "iniciar" : "detener")} la captura.");
+                    break;
+                default:
+                    result.Status = CaptureStatus.Error;
+                    result.ErrorMessage = obsResult.ErrorMessage ?? "OBS no pudo completar la operación.";
+                    break;
+            }
+        }
+        catch (Exception ex)
+        {
+            result.Status = CaptureStatus.Error;
+            result.ErrorMessage = ex.Message;
+            ConsoleLog.Error($"RequestId={command.RequestId}: error inesperado: {ex.Message}");
+        }
+
+        result.ProcessedAtUtc = DateTime.UtcNow;
+
+        try
+        {
+            await _connection.InvokeAsync(CaptureResultMethod, result, _cts?.Token ?? CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            ConsoleLog.Error($"SignalR: no se pudo enviar CaptureResult (RequestId={result.RequestId}): {ex.Message}");
+        }
     }
 
     private async Task SendResultAsync(ReplayResult result)
