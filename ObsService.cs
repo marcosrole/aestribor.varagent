@@ -13,6 +13,17 @@ public enum SaveReplayResult
     Failed
 }
 
+public enum CaptureOutcome
+{
+    Changed,
+    NoChange,
+    NotConnected,
+    Failed
+}
+
+/// <param name="RecordingPath">Archivo de grabación generado al detener (solo en StopCapture).</param>
+public sealed record CaptureOperationResult(CaptureOutcome Outcome, string? ErrorMessage = null, string? RecordingPath = null);
+
 /// <summary>
 /// Encapsula la conexión a OBS (obs-websocket v5) y las operaciones del Replay Buffer.
 /// Mantiene un bucle en segundo plano que reconecta si OBS se cierra o se pierde la conexión.
@@ -127,6 +138,88 @@ public sealed class ObsService : IDisposable
         }
 
         return SaveReplayResult.Failed;
+    }
+
+    /// <summary>
+    /// Inicia la grabación y el Replay Buffer, solo lo que no esté ya activo
+    /// (puede haber otro heat en curso que ya los inició).
+    /// </summary>
+    public CaptureOperationResult StartCapture()
+    {
+        if (!_obs.IsConnected)
+        {
+            return new CaptureOperationResult(CaptureOutcome.NotConnected);
+        }
+
+        try
+        {
+            bool changed = false;
+
+            if (!_obs.GetRecordStatus().IsRecording)
+            {
+                _obs.StartRecord();
+                ConsoleLog.Success("Grabación iniciada.");
+                changed = true;
+            }
+
+            if (!_obs.GetReplayBufferStatus())
+            {
+                _obs.StartReplayBuffer();
+                changed = true; // el evento ReplayBufferStateChanged informa "Replay Buffer ACTIVO"
+            }
+
+            return new CaptureOperationResult(changed ? CaptureOutcome.Changed : CaptureOutcome.NoChange);
+        }
+        catch (ErrorResponseException ex)
+        {
+            ConsoleLog.Error($"OBS rechazó el inicio de la captura (código {ex.ErrorCode}): {ex.Message}");
+            return new CaptureOperationResult(CaptureOutcome.Failed, ex.Message);
+        }
+        catch (Exception ex)
+        {
+            ConsoleLog.Error($"Error al iniciar la captura: {ex.Message}");
+            return new CaptureOperationResult(CaptureOutcome.Failed, ex.Message);
+        }
+    }
+
+    /// <summary>Detiene la grabación y el Replay Buffer, solo lo que esté activo.</summary>
+    public CaptureOperationResult StopCapture()
+    {
+        if (!_obs.IsConnected)
+        {
+            return new CaptureOperationResult(CaptureOutcome.NotConnected);
+        }
+
+        try
+        {
+            bool changed = false;
+            string? recordingPath = null;
+
+            if (_obs.GetRecordStatus().IsRecording)
+            {
+                recordingPath = _obs.StopRecord();
+                ConsoleLog.Success($"Grabación detenida: {recordingPath}");
+                changed = true;
+            }
+
+            if (_obs.GetReplayBufferStatus())
+            {
+                _obs.StopReplayBuffer();
+                changed = true; // el evento ReplayBufferStateChanged informa "Replay Buffer INACTIVO"
+            }
+
+            return new CaptureOperationResult(changed ? CaptureOutcome.Changed : CaptureOutcome.NoChange, RecordingPath: recordingPath);
+        }
+        catch (ErrorResponseException ex)
+        {
+            ConsoleLog.Error($"OBS rechazó la detención de la captura (código {ex.ErrorCode}): {ex.Message}");
+            return new CaptureOperationResult(CaptureOutcome.Failed, ex.Message);
+        }
+        catch (Exception ex)
+        {
+            ConsoleLog.Error($"Error al detener la captura: {ex.Message}");
+            return new CaptureOperationResult(CaptureOutcome.Failed, ex.Message);
+        }
     }
 
     private async Task ConnectionLoopAsync(CancellationToken ct)
