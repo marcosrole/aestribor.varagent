@@ -29,3 +29,6 @@ ENTER = guardar replay · Q = salir.
 | Agente → Hub | `RegisterStation` | `string stationId` (al conectar y al reconectar) |
 | Hub → Agente | `SaveReplay` | `SaveReplayCommand` |
 | Agente → Hub | `ReplayResult` | `ReplayResult` (`Status`: `SAVED`, `BUFFER_INACTIVE`, `OBS_DISCONNECTED`, `ERROR`) |
+| Hub → Agente | `StartCapture` | `CaptureCommand` (al iniciar heats: inicia grabación + Replay Buffer) |
+| Hub → Agente | `StopCapture` | `CaptureCommand` (al finalizar el último heat en curso: detiene grabación + Replay Buffer) |
+| Agente → Hub | `CaptureResult` | `CaptureResult` (`Status`: `STARTED`, `STOPPED`, `NO_CHANGE`, `OBS_DISCONNECTED`, `ERROR`) |
